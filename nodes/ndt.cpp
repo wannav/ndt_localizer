@@ -1,6 +1,7 @@
 #include "ndt.h"
 
-NdtLocalizer::NdtLocalizer(ros::NodeHandle &nh, ros::NodeHandle &private_nh):nh_(nh), private_nh_(private_nh), tf2_listener_(tf2_buffer_){
+NdtLocalizer::NdtLocalizer(ros::NodeHandle &nh, ros::NodeHandle &private_nh) : nh_(nh), private_nh_(private_nh), tf2_listener_(tf2_buffer_)
+{
 
   key_value_stdmap_["state"] = "Initializing";
   init_params();
@@ -17,9 +18,19 @@ NdtLocalizer::NdtLocalizer(ros::NodeHandle &nh, ros::NodeHandle &private_nh):nh_
   initial_pose_sub_ = nh_.subscribe("initialpose", 100, &NdtLocalizer::callback_init_pose, this);
   map_points_sub_ = nh_.subscribe("points_map", 1, &NdtLocalizer::callback_pointsmap, this);
   sensor_points_sub_ = nh_.subscribe("filtered_points", 1, &NdtLocalizer::callback_pointcloud, this);
+  subGps = nh.subscribe("/GPS_odometry", 2000, &NdtLocalizer::gpsHandler, this);
 
   diagnostic_thread_ = std::thread(&NdtLocalizer::timer_diagnostic, this);
   diagnostic_thread_.detach();
+
+  // try
+  // {
+  //   gps_to_baselink_transform_stamped = tf2_buffer_.lookupTransform("laser_link", "GPS", ros::Time(0));
+  // }
+  // catch (tf2::TransformException &ex)
+  // {
+  //   ROS_ERROR("%s", ex.what());
+  // }
 }
 
 NdtLocalizer::~NdtLocalizer() {}
@@ -27,12 +38,14 @@ NdtLocalizer::~NdtLocalizer() {}
 void NdtLocalizer::timer_diagnostic()
 {
   ros::Rate rate(100);
-  while (ros::ok()) {
+  while (ros::ok())
+  {
     diagnostic_msgs::DiagnosticStatus diag_status_msg;
     diag_status_msg.name = "ndt_scan_matcher";
     diag_status_msg.hardware_id = "";
 
-    for (const auto & key_value : key_value_stdmap_) {
+    for (const auto &key_value : key_value_stdmap_)
+    {
       diagnostic_msgs::KeyValue key_value_msg;
       key_value_msg.key = key_value.first;
       key_value_msg.value = key_value.second;
@@ -41,19 +54,22 @@ void NdtLocalizer::timer_diagnostic()
 
     diag_status_msg.level = diagnostic_msgs::DiagnosticStatus::OK;
     diag_status_msg.message = "";
-    if (key_value_stdmap_.count("state") && key_value_stdmap_["state"] == "Initializing") {
+    if (key_value_stdmap_.count("state") && key_value_stdmap_["state"] == "Initializing")
+    {
       diag_status_msg.level = diagnostic_msgs::DiagnosticStatus::WARN;
       diag_status_msg.message += "Initializing State. ";
     }
     if (
-      key_value_stdmap_.count("skipping_publish_num") &&
-      std::stoi(key_value_stdmap_["skipping_publish_num"]) > 1) {
+        key_value_stdmap_.count("skipping_publish_num") &&
+        std::stoi(key_value_stdmap_["skipping_publish_num"]) > 1)
+    {
       diag_status_msg.level = diagnostic_msgs::DiagnosticStatus::WARN;
       diag_status_msg.message += "skipping_publish_num > 1. ";
     }
     if (
-      key_value_stdmap_.count("skipping_publish_num") &&
-      std::stoi(key_value_stdmap_["skipping_publish_num"]) >= 5) {
+        key_value_stdmap_.count("skipping_publish_num") &&
+        std::stoi(key_value_stdmap_["skipping_publish_num"]) >= 5)
+    {
       diag_status_msg.level = diagnostic_msgs::DiagnosticStatus::ERROR;
       diag_status_msg.message += "skipping_publish_num exceed limit. ";
     }
@@ -68,19 +84,55 @@ void NdtLocalizer::timer_diagnostic()
   }
 }
 
-void NdtLocalizer::callback_init_pose(
-  const geometry_msgs::PoseWithCovarianceStamped::ConstPtr & initial_pose_msg_ptr)
+void NdtLocalizer::init_params()
 {
-  if (initial_pose_msg_ptr->header.frame_id == map_frame_) {
+  gpsPoseFile.open("/home/w/ndt/src/ndt_localizer/output/gpsPose_to_baselink.txt");
+  ndtPoseFile.open("/home/w/ndt/src/ndt_localizer/output/ndtPose.txt");
+
+  private_nh_.getParam("base_frame", base_frame_);
+  ROS_INFO("base_frame_id: %s", base_frame_.c_str());
+
+  double trans_epsilon = ndt_.getTransformationEpsilon();
+  double step_size = ndt_.getStepSize();
+  double resolution = ndt_.getResolution();
+  int max_iterations = ndt_.getMaximumIterations();
+
+  private_nh_.getParam("trans_epsilon", trans_epsilon);
+  private_nh_.getParam("step_size", step_size);
+  private_nh_.getParam("resolution", resolution);
+  private_nh_.getParam("max_iterations", max_iterations);
+
+  map_frame_ = "map";
+
+  ndt_.setTransformationEpsilon(trans_epsilon);
+  ndt_.setStepSize(step_size);
+  ndt_.setResolution(resolution);
+  ndt_.setMaximumIterations(max_iterations);
+
+  ROS_INFO(
+      "trans_epsilon: %lf, step_size: %lf, resolution: %lf, max_iterations: %d", trans_epsilon,
+      step_size, resolution, max_iterations);
+
+  private_nh_.getParam(
+      "converged_param_transform_probability", converged_param_transform_probability_);
+}
+
+void NdtLocalizer::callback_init_pose(
+    const geometry_msgs::PoseWithCovarianceStamped::ConstPtr &initial_pose_msg_ptr)
+{
+  if (initial_pose_msg_ptr->header.frame_id == map_frame_)
+  {
     initial_pose_cov_msg_ = *initial_pose_msg_ptr;
-  } else {
+  }
+  else
+  {
     // get TF from pose_frame to map_frame
     geometry_msgs::TransformStamped::Ptr TF_pose_to_map_ptr(new geometry_msgs::TransformStamped);
     get_transform(map_frame_, initial_pose_msg_ptr->header.frame_id, TF_pose_to_map_ptr);
 
     // transform pose_frame to map_frame
     geometry_msgs::PoseWithCovarianceStamped::Ptr mapTF_initial_pose_msg_ptr(
-      new geometry_msgs::PoseWithCovarianceStamped);
+        new geometry_msgs::PoseWithCovarianceStamped);
     tf2::doTransform(*initial_pose_msg_ptr, *mapTF_initial_pose_msg_ptr, *TF_pose_to_map_ptr);
     // mapTF_initial_pose_msg_ptr->header.stamp = initial_pose_msg_ptr->header.stamp;
     initial_pose_cov_msg_ = *mapTF_initial_pose_msg_ptr;
@@ -89,8 +141,81 @@ void NdtLocalizer::callback_init_pose(
   init_pose = false;
 }
 
-void NdtLocalizer::callback_pointsmap(
-  const sensor_msgs::PointCloud2::ConstPtr & map_points_msg_ptr)
+void NdtLocalizer::gpsHandler(const nav_msgs::Odometry::ConstPtr &gpsMsg)
+{
+  std::cout << "---------gpsHandler---------" << std::endl;
+  nav_msgs::Odometry this_gps, gps_to_baselink;
+  this_gps = *gpsMsg;
+
+  // tf2
+  //  try
+  //  {
+  //    gps_to_baselink_transform_stamped = tf2_buffer_.lookupTransform("base_link", "GPS", ros::Time(0));
+  //    // gps_to_baselink_transform_stamped = tf2_buffer_.lookupTransform("GPS", "base_link", ros::Time(0));
+  //  }
+  //  catch (tf2::TransformException &ex)
+  //  {
+  //    ROS_ERROR("%s", ex.what());
+  //  }
+
+  // tf
+  try
+  {
+    tfListener.waitForTransform("base_link", "GPS", ros::Time(0), ros::Duration(3.0));
+    tfListener.lookupTransform("base_link", "GPS", ros::Time(0), Baselink2GPS);
+  }
+  catch (tf::TransformException ex)
+  {
+    ROS_ERROR("%s", ex.what());
+  }
+  // transform from gps frame to baselink frame
+  tf::Transform t_gps;
+  tf::poseMsgToTF(this_gps.pose.pose, t_gps);
+
+  t_gps = t_gps * Baselink2GPS.inverse();
+  gps_to_baselink.pose.pose.position.x = t_gps.getOrigin().x();
+  gps_to_baselink.pose.pose.position.y = t_gps.getOrigin().y();
+  gps_to_baselink.pose.pose.position.z = t_gps.getOrigin().z();
+  gps_to_baselink.pose.pose.orientation.x = t_gps.getRotation().x();
+  gps_to_baselink.pose.pose.orientation.y = t_gps.getRotation().y();
+  gps_to_baselink.pose.pose.orientation.z = t_gps.getRotation().z();
+  gps_to_baselink.pose.pose.orientation.w = t_gps.getRotation().w();
+
+  // tf2::doTransform<geometry_msgs::Pose>(this_gps.pose.pose, gps_to_baselink.pose.pose, gps_to_baselink_transform_stamped);
+  std::cout << "this_gps: " << this_gps.pose.pose.position.x << " " << this_gps.pose.pose.position.y << " " << this_gps.pose.pose.position.z << " "
+            << this_gps.pose.pose.orientation.x << " " << this_gps.pose.pose.orientation.y << " " << this_gps.pose.pose.orientation.z << " " << this_gps.pose.pose.orientation.w << std::endl;
+  std::cout << "gps_to_baselink: " << gps_to_baselink.pose.pose.position.x << " " << gps_to_baselink.pose.pose.position.y << " " << gps_to_baselink.pose.pose.position.z << " "
+            << gps_to_baselink.pose.pose.orientation.x << " " << gps_to_baselink.pose.pose.orientation.y << " " << gps_to_baselink.pose.pose.orientation.z << " " << gps_to_baselink.pose.pose.orientation.w << std::endl;
+
+  // gps_to_baselink = tf2_buffer_.transform(this_gps, "base_link");
+  // gps_to_baselink.pose.pose = tf2_buffer_.transform<geometry_msgs::Pose>(this_gps.pose.pose, "base_link");
+  // gps_to_baselink.header.frame_id = "base_link";
+  gps_to_baselink.header.stamp = this_gps.header.stamp;
+  // gps_to_baselink.child_frame_id = "GPS";
+  std::cout << "gps_to_baselink frame_id = " << gps_to_baselink.header.frame_id << std::endl;
+  // std::cout << "gps_to_baselink child_frame_id = " << gps_to_baselink.child_frame_id << std::endl;
+  gpsPoseFile << std::setprecision(15);
+  gpsPoseFile << gps_to_baselink.header.stamp << " "
+              << gps_to_baselink.pose.pose.position.x << " "
+              << gps_to_baselink.pose.pose.position.y << " "
+              << gps_to_baselink.pose.pose.position.z << " "
+              << gps_to_baselink.pose.pose.orientation.x << " "
+              << gps_to_baselink.pose.pose.orientation.y << " "
+              << gps_to_baselink.pose.pose.orientation.z << " "
+              << gps_to_baselink.pose.pose.orientation.w << std::endl;
+
+  // initial guess
+  // initial_pose_cov_msg_.header.frame_id = "map";
+  // initial_pose_cov_msg_.header.frame_id = "GPS";
+  initial_pose_cov_msg_.header.stamp = this_gps.header.stamp;
+  initial_pose_cov_msg_.pose = gps_to_baselink.pose;
+  // initial_pose_cov_msg_.pose = this_gps.pose;
+  std::cout << "initial_pose_cov_msg_: " << initial_pose_cov_msg_.pose.pose.position.x << ", " << initial_pose_cov_msg_.pose.pose.position.y << ", " << initial_pose_cov_msg_.pose.pose.position.z << std::endl;
+
+  std::cout << "---------gpsHandler  END---------" << std::endl;
+}
+
+void NdtLocalizer::callback_pointsmap(const sensor_msgs::PointCloud2::ConstPtr &map_points_msg_ptr)
 {
   const auto trans_epsilon = ndt_.getTransformationEpsilon();
   const auto step_size = ndt_.getStepSize();
@@ -118,18 +243,17 @@ void NdtLocalizer::callback_pointsmap(
   ndt_map_mtx_.unlock();
 }
 
-void NdtLocalizer::callback_pointcloud(
-  const sensor_msgs::PointCloud2::ConstPtr & sensor_points_sensorTF_msg_ptr)
+void NdtLocalizer::callback_pointcloud(const sensor_msgs::PointCloud2::ConstPtr &sensor_points_sensorTF_msg_ptr)
 {
   const auto exe_start_time = std::chrono::system_clock::now();
   // mutex Map
   std::lock_guard<std::mutex> lock(ndt_map_mtx_);
 
   const std::string sensor_frame = sensor_points_sensorTF_msg_ptr->header.frame_id;
+  // const std::string sensor_frame = "base_link";
   const auto sensor_ros_time = sensor_points_sensorTF_msg_ptr->header.stamp;
 
-  boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ>> sensor_points_sensorTF_ptr(
-    new pcl::PointCloud<pcl::PointXYZ>);
+  boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ>> sensor_points_sensorTF_ptr(new pcl::PointCloud<pcl::PointXYZ>);
 
   pcl::fromROSMsg(*sensor_points_sensorTF_msg_ptr, *sensor_points_sensorTF_ptr);
   // get TF base to sensor
@@ -139,41 +263,42 @@ void NdtLocalizer::callback_pointcloud(
   const Eigen::Affine3d base_to_sensor_affine = tf2::transformToEigen(*TF_base_to_sensor_ptr);
   const Eigen::Matrix4f base_to_sensor_matrix = base_to_sensor_affine.matrix().cast<float>();
 
-  boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ>> sensor_points_baselinkTF_ptr(
-    new pcl::PointCloud<pcl::PointXYZ>);
-  pcl::transformPointCloud(
-    *sensor_points_sensorTF_ptr, *sensor_points_baselinkTF_ptr, base_to_sensor_matrix);
-  
+  boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ>> sensor_points_baselinkTF_ptr(new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::transformPointCloud(*sensor_points_sensorTF_ptr, *sensor_points_baselinkTF_ptr, base_to_sensor_matrix);
+
   // set input point cloud
   ndt_.setInputSource(sensor_points_baselinkTF_ptr);
 
-  if (ndt_.getInputTarget() == nullptr) {
+  if (ndt_.getInputTarget() == nullptr)
+  {
     ROS_WARN_STREAM_THROTTLE(1, "No MAP!");
     return;
   }
   // align
   Eigen::Matrix4f initial_pose_matrix;
-  if (!init_pose){
+  if (!init_pose)
+  {
     Eigen::Affine3d initial_pose_affine;
     tf2::fromMsg(initial_pose_cov_msg_.pose.pose, initial_pose_affine);
     initial_pose_matrix = initial_pose_affine.matrix().cast<float>();
-    // for the first time, we don't know the pre_trans, so just use the init_trans, 
+    // for the first time, we don't know the pre_trans, so just use the init_trans,
     // which means, the delta trans for the second time is 0
     pre_trans = initial_pose_matrix;
     init_pose = true;
-  }else
+  }
+  else
   {
     // use predicted pose as init guess (currently we only impl linear model)
     initial_pose_matrix = pre_trans * delta_trans;
   }
-  
+
   pcl::PointCloud<pcl::PointXYZ>::Ptr output_cloud(new pcl::PointCloud<pcl::PointXYZ>);
   const auto align_start_time = std::chrono::system_clock::now();
   key_value_stdmap_["state"] = "Aligning";
   ndt_.align(*output_cloud, initial_pose_matrix);
   key_value_stdmap_["state"] = "Sleeping";
   const auto align_end_time = std::chrono::system_clock::now();
-  const double align_time = std::chrono::duration_cast<std::chrono::microseconds>(align_end_time - align_start_time).count() /1000.0;
+  const double align_time = std::chrono::duration_cast<std::chrono::microseconds>(align_end_time - align_start_time).count() / 1000.0;
 
   const Eigen::Matrix4f result_pose_matrix = ndt_.getFinalTransformation();
   Eigen::Affine3d result_pose_affine;
@@ -188,36 +313,44 @@ void NdtLocalizer::callback_pointcloud(
 
   bool is_converged = true;
   static size_t skipping_publish_num = 0;
-  if (
-    iteration_num >= ndt_.getMaximumIterations() + 2 ||
-    transform_probability < converged_param_transform_probability_) {
+  if (iteration_num >= ndt_.getMaximumIterations() + 2 || transform_probability < converged_param_transform_probability_)
+  {
     is_converged = false;
+    init_pose = false;
     ++skipping_publish_num;
     std::cout << "Not Converged" << std::endl;
-  } else {
+  }
+  else
+  {
     skipping_publish_num = 0;
   }
   // calculate the delta tf from pre_trans to current_trans
   delta_trans = pre_trans.inverse() * result_pose_matrix;
 
   Eigen::Vector3f delta_translation = delta_trans.block<3, 1>(0, 3);
-  std::cout<<"delta x: "<<delta_translation(0) << " y: "<<delta_translation(1)<<
-             " z: "<<delta_translation(2)<<std::endl;
+  std::cout << "delta x: " << delta_translation(0) << " y: " << delta_translation(1) << " z: " << delta_translation(2) << std::endl;
 
   Eigen::Matrix3f delta_rotation_matrix = delta_trans.block<3, 3>(0, 0);
-  Eigen::Vector3f delta_euler = delta_rotation_matrix.eulerAngles(2,1,0);
-  std::cout<<"delta yaw: "<<delta_euler(0) << " pitch: "<<delta_euler(1)<<
-             " roll: "<<delta_euler(2)<<std::endl;
+  Eigen::Vector3f delta_euler = delta_rotation_matrix.eulerAngles(2, 1, 0);
+  std::cout << "delta yaw: " << delta_euler(0) << " pitch: " << delta_euler(1) << " roll: " << delta_euler(2) << std::endl;
 
   pre_trans = result_pose_matrix;
-  
+
   // publish
   geometry_msgs::PoseStamped result_pose_stamped_msg;
   result_pose_stamped_msg.header.stamp = sensor_ros_time;
   result_pose_stamped_msg.header.frame_id = map_frame_;
   result_pose_stamped_msg.pose = result_pose_msg;
 
-  if (is_converged) {
+  ndtPoseFile << std::setprecision(15);
+  ndtPoseFile << result_pose_stamped_msg.header.stamp.toSec() << " "
+              << result_pose_stamped_msg.pose.position.x << " " << result_pose_stamped_msg.pose.position.y << " "
+              << result_pose_stamped_msg.pose.position.z << " "
+              << result_pose_stamped_msg.pose.orientation.x << " " << result_pose_stamped_msg.pose.orientation.y << " "
+              << result_pose_stamped_msg.pose.orientation.z << " " << result_pose_stamped_msg.pose.orientation.w << std::endl;
+
+  if (is_converged)
+  {
     ndt_pose_pub_.publish(result_pose_stamped_msg);
   }
 
@@ -227,13 +360,12 @@ void NdtLocalizer::callback_pointcloud(
   // publish aligned point cloud
   pcl::PointCloud<pcl::PointXYZ>::Ptr sensor_points_mapTF_ptr(new pcl::PointCloud<pcl::PointXYZ>);
   pcl::transformPointCloud(
-    *sensor_points_baselinkTF_ptr, *sensor_points_mapTF_ptr, result_pose_matrix);
+      *sensor_points_baselinkTF_ptr, *sensor_points_mapTF_ptr, result_pose_matrix);
   sensor_msgs::PointCloud2 sensor_points_mapTF_msg;
   pcl::toROSMsg(*sensor_points_mapTF_ptr, sensor_points_mapTF_msg);
   sensor_points_mapTF_msg.header.stamp = sensor_ros_time;
   sensor_points_mapTF_msg.header.frame_id = map_frame_;
   sensor_aligned_pose_pub_.publish(sensor_points_mapTF_msg);
-
 
   std_msgs::Float32 exe_time_msg;
   exe_time_msg.data = exe_time;
@@ -260,42 +392,12 @@ void NdtLocalizer::callback_pointcloud(
   std::cout << "skipping_publish_num: " << skipping_publish_num << std::endl;
 }
 
-void NdtLocalizer::init_params(){
-
-  private_nh_.getParam("base_frame", base_frame_);
-  ROS_INFO("base_frame_id: %s", base_frame_.c_str());
-
-  double trans_epsilon = ndt_.getTransformationEpsilon();
-  double step_size = ndt_.getStepSize();
-  double resolution = ndt_.getResolution();
-  int max_iterations = ndt_.getMaximumIterations();
-
-  private_nh_.getParam("trans_epsilon", trans_epsilon);
-  private_nh_.getParam("step_size", step_size);
-  private_nh_.getParam("resolution", resolution);
-  private_nh_.getParam("max_iterations", max_iterations);
-
-  map_frame_ = "map";
-
-  ndt_.setTransformationEpsilon(trans_epsilon);
-  ndt_.setStepSize(step_size);
-  ndt_.setResolution(resolution);
-  ndt_.setMaximumIterations(max_iterations);
-
-  ROS_INFO(
-    "trans_epsilon: %lf, step_size: %lf, resolution: %lf, max_iterations: %d", trans_epsilon,
-    step_size, resolution, max_iterations);
-
-  private_nh_.getParam(
-    "converged_param_transform_probability", converged_param_transform_probability_);
-}
-
-
 bool NdtLocalizer::get_transform(
-  const std::string & target_frame, const std::string & source_frame,
-  const geometry_msgs::TransformStamped::Ptr & transform_stamped_ptr, const ros::Time & time_stamp)
+    const std::string &target_frame, const std::string &source_frame,
+    const geometry_msgs::TransformStamped::Ptr &transform_stamped_ptr, const ros::Time &time_stamp)
 {
-  if (target_frame == source_frame) {
+  if (target_frame == source_frame)
+  {
     transform_stamped_ptr->header.stamp = time_stamp;
     transform_stamped_ptr->header.frame_id = target_frame;
     transform_stamped_ptr->child_frame_id = source_frame;
@@ -309,10 +411,13 @@ bool NdtLocalizer::get_transform(
     return true;
   }
 
-  try {
+  try
+  {
     *transform_stamped_ptr =
-      tf2_buffer_.lookupTransform(target_frame, source_frame, time_stamp);
-  } catch (tf2::TransformException & ex) {
+        tf2_buffer_.lookupTransform(target_frame, source_frame, time_stamp);
+  }
+  catch (tf2::TransformException &ex)
+  {
     ROS_WARN("%s", ex.what());
     ROS_ERROR("Please publish TF %s to %s", target_frame.c_str(), source_frame.c_str());
 
@@ -332,10 +437,11 @@ bool NdtLocalizer::get_transform(
 }
 
 bool NdtLocalizer::get_transform(
-  const std::string & target_frame, const std::string & source_frame,
-  const geometry_msgs::TransformStamped::Ptr & transform_stamped_ptr)
+    const std::string &target_frame, const std::string &source_frame,
+    const geometry_msgs::TransformStamped::Ptr &transform_stamped_ptr)
 {
-  if (target_frame == source_frame) {
+  if (target_frame == source_frame)
+  {
     transform_stamped_ptr->header.stamp = ros::Time::now();
     transform_stamped_ptr->header.frame_id = target_frame;
     transform_stamped_ptr->child_frame_id = source_frame;
@@ -349,10 +455,13 @@ bool NdtLocalizer::get_transform(
     return true;
   }
 
-  try {
+  try
+  {
     *transform_stamped_ptr =
-      tf2_buffer_.lookupTransform(target_frame, source_frame, ros::Time(0), ros::Duration(1.0));
-  } catch (tf2::TransformException & ex) {
+        tf2_buffer_.lookupTransform(target_frame, source_frame, ros::Time(0), ros::Duration(1.0));
+  }
+  catch (tf2::TransformException &ex)
+  {
     ROS_WARN("%s", ex.what());
     ROS_ERROR("Please publish TF %s to %s", target_frame.c_str(), source_frame.c_str());
 
@@ -372,8 +481,8 @@ bool NdtLocalizer::get_transform(
 }
 
 void NdtLocalizer::publish_tf(
-  const std::string & frame_id, const std::string & child_frame_id,
-  const geometry_msgs::PoseStamped & pose_msg)
+    const std::string &frame_id, const std::string &child_frame_id,
+    const geometry_msgs::PoseStamped &pose_msg)
 {
   geometry_msgs::TransformStamped transform_stamped;
   transform_stamped.header.frame_id = frame_id;
@@ -394,16 +503,15 @@ void NdtLocalizer::publish_tf(
   tf2_broadcaster_.sendTransform(transform_stamped);
 }
 
-
 int main(int argc, char **argv)
 {
-    ros::init(argc, argv, "ndt_localizer");
-    ros::NodeHandle nh;
-    ros::NodeHandle private_nh("~");
+  ros::init(argc, argv, "ndt_localizer");
+  ros::NodeHandle nh;
+  ros::NodeHandle private_nh("~");
 
-    NdtLocalizer ndt_localizer(nh, private_nh);
+  NdtLocalizer ndt_localizer(nh, private_nh);
 
-    ros::spin();
+  ros::spin();
 
-    return 0;
+  return 0;
 }

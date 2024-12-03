@@ -10,7 +10,7 @@
   <arg name="output_pose_with_covariance_topic" default="ndt_pose_with_covariance" doc="Estimated self position with covariance" />
   <arg name="output_diagnostics_topic" default="diagnostics" doc="Diagnostic topic" />
 
-  <include file="$(find ndt_localizer)/launch/static_tf.launch" />
+  <!-- <include file="$(find ndt_localizer)/launch/static_tf.launch" /> -->
   <include file="$(find ndt_localizer)/launch/map_loader.launch" />
   <include file="$(find ndt_localizer)/launch/points_downsample.launch" />
 

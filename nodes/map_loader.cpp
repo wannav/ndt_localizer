@@ -77,7 +77,7 @@ sensor_msgs::PointCloud2 MapLoader::CreatePcd()
 			pcd.row_step += part.row_step;
 			pcd.data.insert(pcd.data.end(), part.data.begin(), part.data.end());
 		}
-		std::cerr << "load " << path << std::endl;
+		std::cout << "load " << path << std::endl;
 		if (!ros::ok()) break;
 	}
 

@@ -2,10 +2,26 @@
 <robot name="car">
   <link name="base_link">
     <visual name="base_visual">
-      <origin xyz="1 0 0.0" rpy="1.57 0 3.14" />
+      <origin xyz="0 0 0" rpy="1.57 0 -1.57" />
       <geometry>
         <mesh filename="package://ndt_localizer/urdf/lexus.dae" scale="1.0 1.0 1.0"/>
       </geometry>
     </visual>
   </link>
+
+  <link name="laser_link"> </link>
+  <joint name="laser_link_joint" type="fixed">
+    <parent link="base_link" />
+    <child link="laser_link" />
+    <origin xyz="0 0 0" rpy="0 0 0" />
+  </joint>
+
+  <link name="GPS"></link>
+  <joint name="GPS_joint" type="fixed">
+    <parent link="base_link" />
+    <child link="GPS" />
+    <origin xyz="0 -3.995 0" rpy="0 0 1.570796327" />
+  </joint>
+  
+
 </robot>
